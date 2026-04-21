@@ -1,6 +1,6 @@
 import telebot
 from openai import OpenAI
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from PIL import Image
 from io import BytesIO
 import os
