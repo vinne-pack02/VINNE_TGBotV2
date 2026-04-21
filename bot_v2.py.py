@@ -7,7 +7,6 @@ import os
 import base64
 import time
 import random
-import os
 
 # ===================== CONFIGURAÇÃO =====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -23,7 +22,7 @@ client = OpenAI(
 
 # Modelos recomendados
 MODELO_TEXTO = "llama-3.3-70b-versatile"
-MODELO_VISAO = "llama-3.3-70b-specdec"
+MODELO_VISAO = "llama-3.2-11b-vision-preview"
 
 # ===================== FUNÇÕES DE APOIO =====================
 
