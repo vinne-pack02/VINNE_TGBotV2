@@ -22,7 +22,7 @@ client = OpenAI(
 
 # Modelos recomendados
 MODELO_TEXTO = "llama-3.3-70b-versatile"
-MODELO_VISAO = "llama-3.3-70b-versatile"
+MODELO_VISAO = "LLaVA-v1.5-7B"
 
 # ===================== FUNÇÕES DE APOIO =====================
 
