@@ -21,8 +21,8 @@ client = OpenAI(
 )
 
 # Modelos recomendados
-MODELO_TEXTO = "llama-3.3-70b-versatile"
-MODELO_VISAO = "LLaVA-v1.5-7B"
+MODELO_TEXTO = "meta-llama/llama-4-scout-17b-16e-instruct"
+MODELO_VISAO = "llama-3.2-11b-vision"
 
 # ===================== FUNÇÕES DE APOIO =====================
 
