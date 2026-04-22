@@ -22,7 +22,7 @@ client = OpenAI(
 
 # Modelos recomendados
 MODELO_TEXTO = "meta-llama/llama-4-scout-17b-16e-instruct"
-MODELO_VISAO = "llama-3.2-11b-vision-preview"
+MODELO_VISAO = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # ===================== FUNÇÕES DE APOIO =====================
 
