@@ -2,3 +2,6 @@ pyTelegramBotAPI
 openai
 ddgs
 Pillow
+requests
+pandas
+tabulate
