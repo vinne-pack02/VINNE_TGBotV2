@@ -3,7 +3,8 @@ from openai import OpenAI
 from ddgs import DDGS 
 from PIL import Image
 from io import BytesIO
-import os, base64, time, random, requests, urllib.parse, uuid, threading, json, queue
+from datetime import datetime
+import os, base64, time, requests, urllib.parse, threading, json, queue
 
 # ===================== CONFIGURAÇÃO =====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") 
@@ -16,21 +17,13 @@ MODELO_TEXTO = "meta-llama/llama-4-scout-17b-16e-instruct"
 MODELO_VISAO = "meta-llama/llama-4-scout-17b-16e-instruct"
 ARQUIVO_MEMORIA = "memorias_backup.json"
 
-# ESTADO GLOBAL E PROTEÇÕES
 fila_geracao = queue.Queue()
 usuarios_na_fila = set()
 ultimo_comando = {}      
 busca_lock = threading.Semaphore(2) 
 ultima_busca_global = 0 
-tempos_geracao = []
 
 # ===================== PERSISTÊNCIA =====================
-
-def salvar_memorias(mems):
-    try:
-        with open(ARQUIVO_MEMORIA, 'w', encoding='utf-8') as f:
-            json.dump(mems, f, ensure_ascii=False, indent=4)
-    except Exception as e: print(f"⚠️ Erro JSON: {e}")
 
 def carregar_memorias():
     if os.path.exists(ARQUIVO_MEMORIA):
@@ -40,67 +33,75 @@ def carregar_memorias():
         except: return {}
     return {}
 
+def salvar_memorias(mems):
+    try:
+        with open(ARQUIVO_MEMORIA, 'w', encoding='utf-8') as f:
+            json.dump(mems, f, ensure_ascii=False, indent=4)
+    except Exception as e: print(f"❌ [ERRO JSON] {e}")
+
 memorias = carregar_memorias()
 
-# ===================== BUSCA WEB PROTEGIDA =====================
+# ===================== FUNÇÕES DE APOIO =====================
+
+def obter_preco_crypto(coin_id="bitcoin"):
+    try:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id.lower()}&vs_currencies=usd&include_24hr_change=true"
+        res = requests.get(url, timeout=10).json()
+        if coin_id.lower() in res:
+            info = res[coin_id.lower()]
+            return f"💰 **{coin_id.upper()}**\n💵 Preço: ${info['usd']:,.2f}\n📈 24h: {info.get('usd_24h_change', 0):.2f}%"
+        return f"❌ Moeda '{coin_id}' não encontrada."
+    except: return "⚠️ Erro na API."
+
+def obter_trending():
+    try:
+        url = "https://api.coingecko.com/api/v3/search/trending"
+        res = requests.get(url, timeout=10).json()
+        lista = [f"{i+1}º {c['item']['name']} ({c['item']['symbol']})" for i, c in enumerate(res['coins'][:10])]
+        return "🔥 **Moedas em Tendência:**\n\n" + "\n".join(lista)
+    except: return "⚠️ Erro ao buscar tendências."
 
 def pesquisar_web_protegido(query):
     global ultima_busca_global
     with busca_lock:
         agora = time.time()
-        tempo_desde_ultima = agora - ultima_busca_global
-        if tempo_desde_ultima < 7:
-            time.sleep(7 - tempo_desde_ultima)
-            
+        if (agora - ultima_busca_global) < 7: time.sleep(7 - (agora - ultima_busca_global))
         try:
             with DDGS() as ddgs:
-                print(f"🌐 [BUSCA] Pesquisando: {query}")
-                time.sleep(random.uniform(1.0, 2.0))
-                resultados = []
-                for r in ddgs.text(query, max_results=3):
-                    texto_limpo = " ".join(r['body'].split())
-                    resultados.append(f"Fonte: {r['href']}\nInfo: {texto_limpo}")
+                res = [f"Fonte: {r['href']}\nConteúdo: {r['body']}" for r in ddgs.text(query, max_results=3)]
                 ultima_busca_global = time.time()
-                return "\n\n".join(resultados) if resultados else "Sem resultados."
-        except Exception as e:
-            print(f"⚠️ [RATE LIMIT] Busca: {e}")
-            if "202" in str(e) or "Ratelimit" in str(e): return "OCUPADO"
-            return "Erro ao acessar a web agora."
+                print(f"✅ [!BUSCA] Sucesso: {query[:20]}")
+                return "\n\n".join(res) if res else "Sem resultados."
+        except Exception as e: 
+            print(f"❌ [!BUSCA] Falha: {e}")
+            return "OCUPADO"
 
-# ===================== PROCESSADOR DE FILA COM RETRY =====================
+# ===================== PROCESSADOR DE IMAGENS =====================
 
 def processador_de_fila():
     while True:
         chat_id, prompt, msg_status_id, message_id = fila_geracao.get()
-        inicio = time.time()
         tentativas = 0
         sucesso = False
-        
         while tentativas < 2 and not sucesso:
             try:
                 url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=1024&height=1024&nologo=true"
-                res = requests.get(url, timeout=60)
-                
+                res = requests.get(url, timeout=90)
                 if res.status_code == 200:
                     bot.send_photo(chat_id, res.content, reply_to_message_id=message_id)
                     bot.delete_message(chat_id, msg_status_id)
                     sucesso = True
-                    print(f"✅ [IMAGEM] Sucesso na tentativa {tentativas+1} em {time.time() - inicio:.1f}s")
-                else:
-                    tentativas += 1
-                    if tentativas < 2:
-                        bot.edit_message_text("🔄 API lenta... Tentando novamente (2/2)", chat_id, msg_status_id)
-                        time.sleep(3)
-            except Exception as e:
+                    print(f"✅ [!CRIAR] Sucesso T{tentativas+1}")
+                else: raise Exception()
+            except:
                 tentativas += 1
-                print(f"⚠️ [RETRY {tentativas}] Erro: {e}")
-                if tentativas < 2:
-                    bot.edit_message_text("🔄 Erro de conexão. Re-tentando...", chat_id, msg_status_id)
-                    time.sleep(3)
-
-        if not sucesso:
-            bot.edit_message_text("❌ A imagem demorou demais. Tente um prompt mais simples.", chat_id, msg_status_id)
-        
+                if tentativas == 1:
+                    print(f"🔄 [!CRIAR] Falha T1. Tentando T2...")
+                    bot.edit_message_text("🔄 API instável. Tentando novamente...", chat_id, msg_status_id)
+                    time.sleep(5)
+                else:
+                    print(f"❌ [!CRIAR] Falha definitiva.")
+                    bot.edit_message_text("❌ Falha ao gerar imagem.", chat_id, msg_status_id)
         usuarios_na_fila.discard(chat_id)
         fila_geracao.task_done()
 
@@ -108,120 +109,102 @@ threading.Thread(target=processador_de_fila, daemon=True).start()
 
 # ===================== HANDLERS =====================
 
-# 1. COMANDO START
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    texto_ajuda = (
-        "👋 **Olá! Eu sou o BOT-VINNE.**\n\n"
-        "Aqui estão as minhas funções principais:\n\n"
-        "💬 **Conversa Inteligente:** Basta me enviar uma mensagem de texto. Eu lembro do contexto da nossa conversa!\n\n"
-        "🔍 **Busca na Web:** Use `!busca` seguido do que deseja saber.\n"
-        "   _Ex: !busca preço do Bitcoin agora_\n\n"
-        "🎨 **Gerador de Imagens:** Use `!criar` seguido da descrição da imagem.\n"
-        "   _Ex: !criar um gato astronauta em marte_\n\n"
-        "🖼️ **Visão Artificial:** Envie uma foto e eu direi o que estou vendo nela!\n\n"
-        "⏱️ **Proteções:** Possuo cooldown de 3s entre mensagens para evitar spam."
+    chat_id = str(message.chat.id)
+    mems = len(memorias.get(chat_id, []))
+    texto = (
+        "🚀 **BOT-VINNE PRO ONLINE**\n\n"
+        f"🧠 **Memória:** {mems} interações salvas.\n\n"
+        "**Comandos (Use / ou !):**\n"
+        "• `!preco [moeda]` - Valor real da cripto.\n"
+        "• `!trending` - Moedas em tendência.\n"
+        "• `!busca [termo]` - Pesquisa web em tempo real.\n"
+        "• `!criar [prompt]` - Gerar imagem IA.\n\n"
+        "📸 **Dica:** Envie uma foto ou responda a uma mensagem para contexto!"
     )
-    bot.reply_to(message, texto_ajuda, parse_mode="Markdown")
+    bot.reply_to(message, texto, parse_mode="Markdown")
 
-# 2. VISÃO (Deve vir antes do handler de texto genérico)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    chat_id = str(message.chat.id)
     try:
-        bot.send_chat_action(chat_id, 'typing')
         file_info = bot.get_file(message.photo[-1].file_id)
-        file_content = bot.download_file(file_info.file_path)
-        
-        img = Image.open(BytesIO(file_content))
+        img = Image.open(BytesIO(bot.download_file(file_info.file_path)))
         img.thumbnail((800, 800))
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=80)
+        buf = BytesIO(); img.save(buf, format="JPEG", quality=80)
         img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-
+        
+        caption = message.caption or "Analise esta imagem."
         resp = client_groq.chat.completions.create(
             model=MODELO_VISAO,
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": message.caption or "Descreva esta imagem em detalhes."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-            ]}]
+            messages=[{"role": "user", "content": [{"type": "text", "text": caption}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}]
         )
         bot.reply_to(message, resp.choices[0].message.content)
+        print(f"✅ [VISÃO] Sucesso: {message.from_user.first_name}")
     except Exception as e:
-        print(f"❌ Erro Visão: {e}")
-        bot.reply_to(message, "⚠️ Não consegui analisar a foto agora.")
+        print(f"❌ [VISÃO] Falha: {e}")
 
-# 3. TEXTO E COMANDOS GERAIS
 @bot.message_handler(func=lambda message: message.text is not None)
 def handle_all(message):
     chat_id = str(message.chat.id)
     agora = time.time()
+    msg_text = message.text.lower()
+    data_hoje = datetime.now().strftime("%d/%m/%Y")
 
-    # Cooldown 3s
-    if chat_id in ultimo_comando and (agora - ultimo_comando[chat_id]) < 3:
-        return 
+    if chat_id in ultimo_comando and (agora - ultimo_comando[chat_id]) < 1.5: return 
     ultimo_comando[chat_id] = agora
-
     if chat_id not in memorias: memorias[chat_id] = []
 
-    # COMANDO !CRIAR
-    if message.text.lower().startswith("!criar"):
-        if chat_id in usuarios_na_fila:
-            bot.reply_to(message, "⚠️ Aguarde a imagem anterior!")
-            return
-        prompt = message.text[7:].strip()
-        if not prompt: return
-        msg_st = bot.reply_to(message, "🎨 Gerando sua imagem...")
+    # --- COMANDOS UNIFICADOS (! E /) ---
+    
+    if msg_text.startswith("!preco") or msg_text.startswith("/preco"):
+        arg = message.text.replace("!preco", "").replace("/preco", "").strip()
+        bot.reply_to(message, obter_preco_crypto(arg or "bitcoin"), parse_mode="Markdown")
+        return
+    
+    if msg_text.startswith("!trending") or msg_text.startswith("/trending"):
+        bot.reply_to(message, obter_trending(), parse_mode="Markdown")
+        return
+
+    if msg_text.startswith("!criar") or msg_text.startswith("/criar"):
+        if chat_id in usuarios_na_fila: return
+        prompt = message.text.replace("!criar", "").replace("/criar", "").strip()
+        msg_st = bot.reply_to(message, "🎨 **Processando imagem...** (Aprox. 1 min)")
         usuarios_na_fila.add(chat_id)
         fila_geracao.put((chat_id, prompt, msg_st.message_id, message.id))
         return
 
-    # LOGICA DE CHAT / BUSCA
+    # --- CHAT COM MEMÓRIA E REPLY ---
     try:
-        bot.send_chat_action(chat_id, 'typing')
         contexto_web = ""
-        texto_pergunta = message.text
-
-        # Lógica de Contexto por Reply
-        if message.reply_to_message and message.reply_to_message.from_user.is_bot:
-            contexto_anterior = message.reply_to_message.text
-            texto_pergunta = f"Contexto anterior: '{contexto_anterior}' -> Pergunta atual: {message.text}"
-
-        # COMANDO !BUSCA
-        if message.text.lower().startswith("!busca"):
-            termo = message.text[7:].strip()
-            res_busca = pesquisar_web_protegido(termo)
-            if res_busca == "OCUPADO":
-                bot.reply_to(message, "⌛ Servidor de busca ocupado. Tente em 1 minuto.")
+        if msg_text.startswith("!busca") or msg_text.startswith("/busca"):
+            query = message.text.replace("!busca", "").replace("/busca", "").strip()
+            res = pesquisar_web_protegido(query)
+            if res == "OCUPADO": 
+                bot.reply_to(message, "⌛ Aguarde o cooldown de busca.")
                 return
-            contexto_web = f"\n\n[DADOS DA WEB]:\n{res_busca}"
+            contexto_web = f"\n\n[DADOS WEB]:\n{res}"
         
-        instrucao = (
-            f"Tu és o BOT-VINNE, assistente técnico do Vinicius. "
-            f"Usa o histórico para manter a persistência.{contexto_web}"
-        )
+        texto_final = message.text
+        if message.reply_to_message:
+            original = message.reply_to_message.text or "[Mídia]"
+            texto_final = f"(Em resposta a: '{original}') -> {message.text}"
 
+        instrucao = f"Tu és o BOT-VINNE. DATA ATUAL: {data_hoje}. {contexto_web}"
         historico = [{"role": "system", "content": instrucao}]
-        historico.extend(memorias[chat_id][-15:])
-        historico.append({"role": "user", "content": texto_pergunta})
+        historico.extend(memorias[chat_id][-10:])
+        historico.append({"role": "user", "content": texto_final})
 
         resp = client_groq.chat.completions.create(model=MODELO_TEXTO, messages=historico)
         resposta = resp.choices[0].message.content
         bot.reply_to(message, resposta)
-        
+
         memorias[chat_id].append({"role": "user", "content": message.text})
         memorias[chat_id].append({"role": "assistant", "content": resposta})
-        if len(memorias[chat_id]) > 30: memorias[chat_id] = memorias[chat_id][-30:]
+        if len(memorias[chat_id]) > 20: memorias[chat_id] = memorias[chat_id][-20:]
         salvar_memorias(memorias)
-    except Exception as e: print(f"❌ Chat: {e}")
-
-# ===================== LOOP =====================
+    except Exception as e: print(f"❌ [CHAT] Erro: {e}")
 
 if __name__ == "__main__":
-    print(f"🚀 BOT-VINNE ONLINE | Memórias: {len(memorias)}")
-    while True:
-        try:
-            bot.infinity_polling(skip_pending=True, timeout=60)
-        except Exception as e:
-            print(f"⚠️ Reconectando... {e}")
-            time.sleep(5)
+    print(f"🚀 SISTEMA ONLINE | {datetime.now().strftime('%H:%M:%S')}")
+    bot.infinity_polling(skip_pending=True)
